@@ -12,12 +12,13 @@ const mariadb = require('mariadb');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Pool do banco de dados (na VPS)
+// Pool do banco de dados (Railway MySQL — variáveis injetadas automaticamente)
 const dbPool = mariadb.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
+  host: process.env.MYSQLHOST,
+  user: process.env.MYSQLUSER,
+  password: process.env.MYSQLPASSWORD,
+  database: process.env.MYSQLDATABASE,
+  port: parseInt(process.env.MYSQLPORT || '3306'),
   connectionLimit: 3,
 });
 
