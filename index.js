@@ -13,17 +13,30 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Pool do banco de dados (Railway MySQL — variáveis injetadas automaticamente)
-const dbPool = mariadb.createPool({
-  host: process.env.MYSQLHOST,
-  user: process.env.MYSQLUSER,
-  password: process.env.MYSQLPASSWORD,
-  database: process.env.MYSQLDATABASE,
-  port: parseInt(process.env.MYSQLPORT || '3306'),
-  connectionLimit: 3,
-});
+const hasDbConfig = !!(
+  process.env.MYSQLHOST &&
+  process.env.MYSQLUSER &&
+  process.env.MYSQLPASSWORD &&
+  process.env.MYSQLDATABASE
+);
+
+let dbPool = null;
+if (hasDbConfig) {
+  dbPool = mariadb.createPool({
+    host: process.env.MYSQLHOST,
+    user: process.env.MYSQLUSER,
+    password: process.env.MYSQLPASSWORD,
+    database: process.env.MYSQLDATABASE,
+    port: parseInt(process.env.MYSQLPORT || '3306'),
+    connectionLimit: 3,
+  });
+} else {
+  console.warn('⚠️  DB config missing — skipping DB pool creation. Set MYSQLHOST/USER/PASSWORD/DATABASE to enable DB.');
+}
 
 // Garante que a tabela existe
 async function initDatabase() {
+  if (!dbPool) return;
   let conn;
   try {
     conn = await dbPool.getConnection();
@@ -38,9 +51,9 @@ async function initDatabase() {
     `);
     console.log('✅ Tabela Tokens ok');
   } catch (err) {
-    console.error('❌ Erro ao conectar no banco:', err.message);
+    console.error('❌ Erro ao inicializar tabela Tokens:', err && err.stack ? err.stack : err);
   } finally {
-    if (conn) conn.release();
+    if (conn) try { conn.release(); } catch (e) { /* ignore */ }
   }
 }
 
@@ -84,19 +97,25 @@ app.get('/callback', async (req, res) => {
 
     const discordUserId = userResponse.data.id;
 
-    // Salva no banco
-    let conn;
-    try {
-      conn = await dbPool.getConnection();
-      await conn.query(
-        `INSERT INTO Tokens (user_id, access_token, refresh_token)
-         VALUES (?, ?, ?)
-         ON DUPLICATE KEY UPDATE access_token = VALUES(access_token), refresh_token = VALUES(refresh_token)`,
-        [discordUserId, accessToken, refreshToken || '']
-      );
-      console.log(`✅ Token salvo para user ${discordUserId}`);
-    } finally {
-      if (conn) conn.release();
+    // Salva no banco (se configurado)
+    if (dbPool) {
+      let conn;
+      try {
+        conn = await dbPool.getConnection();
+        await conn.query(
+          `INSERT INTO Tokens (user_id, access_token, refresh_token)
+           VALUES (?, ?, ?)
+           ON DUPLICATE KEY UPDATE access_token = VALUES(access_token), refresh_token = VALUES(refresh_token)`,
+          [discordUserId, accessToken, refreshToken || '']
+        );
+        console.log(`✅ Token salvo para user ${discordUserId}`);
+      } catch (err) {
+        console.error('❌ Erro ao salvar token no DB:', err && err.stack ? err.stack : err);
+      } finally {
+        if (conn) try { conn.release(); } catch (e) { /* ignore */ }
+      }
+    } else {
+      console.warn('⚠️  DB não configurado — token não foi persistido.');
     }
 
     res.send(`
@@ -108,7 +127,17 @@ app.get('/callback', async (req, res) => {
       </html>
     `);
   } catch (error) {
-    console.error('❌ Erro callback:', error.response?.data || error.message);
+    const debug = process.env.DEBUG === 'true';
+    const errData = error.response?.data || error.message || error;
+    console.error('❌ Erro callback:', errData);
+    if (debug) {
+      // Em modo debug, devolver detalhes para facilitar diagnóstico localmente
+      return res.status(500).send(`Erro ao autorizar: ${JSON.stringify(errData)}`);
+    }
+    // Mensagem amigável e instrução para re-tentar fluxo OAuth
+    if (error.response && error.response.data && error.response.data.error === 'invalid_grant') {
+      return res.status(400).send('Código inválido ou expirado. Reinicie o fluxo de autorização e tente novamente.');
+    }
     res.status(500).send('Erro ao autorizar. Tente novamente.');
   }
 });
