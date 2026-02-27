@@ -8,6 +8,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const mariadb = require('mariadb');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -29,6 +30,8 @@ if (hasDbConfig) {
     database: process.env.MYSQLDATABASE,
     port: parseInt(process.env.MYSQLPORT || '3306'),
     connectionLimit: 3,
+    acquireTimeout: 10000, // ms waiting for a free connection from pool
+    connectTimeout: 10000, // ms timeout for TCP connect
   });
 } else {
   console.warn('⚠️  DB config missing — skipping DB pool creation. Set MYSQLHOST/USER/PASSWORD/DATABASE to enable DB.');
@@ -52,6 +55,16 @@ async function initDatabase() {
     console.log('✅ Tabela Tokens ok');
   } catch (err) {
     console.error('❌ Erro ao inicializar tabela Tokens:', err && err.stack ? err.stack : err);
+    // Se a tentativa de obter conexão falhar repetidamente, desabilitar o pool
+    try {
+      if (dbPool && typeof dbPool.end === 'function') {
+        await dbPool.end();
+        console.warn('⚠️  DB pool encerrado devido a falha de conexão. Desabilitando persistência.');
+      }
+    } catch (endErr) {
+      console.warn('⚠️  Falha ao encerrar DB pool:', endErr && endErr.message ? endErr.message : endErr);
+    }
+    dbPool = null;
   } finally {
     if (conn) try { conn.release(); } catch (e) { /* ignore */ }
   }
@@ -116,6 +129,22 @@ app.get('/callback', async (req, res) => {
       }
     } else {
       console.warn('⚠️  DB não configurado — token não foi persistido.');
+      // Fallback opcional: persiste em arquivo local se habilitado
+      try {
+        const useFile = process.env.FILE_FALLBACK === 'true';
+        if (useFile) {
+          const record = {
+            created_at: new Date().toISOString(),
+            user_id: discordUserId,
+            access_token: accessToken,
+            refresh_token: refreshToken || null,
+          };
+          fs.appendFileSync('tokens.log', JSON.stringify(record) + '\n', { encoding: 'utf8' });
+          console.log('✅ Token registrado em tokens.log (fallback de arquivo)');
+        }
+      } catch (fileErr) {
+        console.warn('⚠️  Falha ao escrever arquivo de fallback:', fileErr && fileErr.message ? fileErr.message : fileErr);
+      }
     }
 
     res.send(`
