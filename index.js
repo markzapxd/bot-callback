@@ -115,4 +115,21 @@ app.get('/callback', async (req, res) => {
 
 app.get('/', (req, res) => res.send('Bot callback online!'));
 
+// Endpoint para o bot na VPS verificar se o token existe
+app.get('/check', async (req, res) => {
+  const userId = req.query.user_id;
+  if (!userId) return res.json({ hasToken: false });
+
+  let conn;
+  try {
+    conn = await dbPool.getConnection();
+    const rows = await conn.query('SELECT id FROM Tokens WHERE user_id = ? LIMIT 1', [userId]);
+    res.json({ hasToken: rows.length > 0 });
+  } catch {
+    res.json({ hasToken: false });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
 app.listen(PORT, () => console.log(`🌐 Servidor rodando na porta ${PORT}`));
